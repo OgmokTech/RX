@@ -1,0 +1,145 @@
+### RX Clinic API: sample requests for the VSCode "REST Client" extension.
+### Click "Send Request" above a request. Start the API first (server: npm run dev).
+### Requests are chained: "login" stores the token that later requests use.
+
+@base = http://localhost:5000/api
+@password = Clinic2026!Pass
+
+### Health check (no auth)
+GET {{base}}/health
+
+### Sign in as the doctor
+# @name login
+POST {{base}}/auth/login
+Content-Type: application/json
+
+{ "email": "dr.reyes@rxclinic.local", "password": "{{password}}" }
+
+@token = {{login.response.body.accessToken}}
+
+### Who am I
+GET {{base}}/auth/me
+Authorization: Bearer {{token}}
+
+### Doctor dashboard: today's visits, pending labs
+GET {{base}}/doctors/me/dashboard
+Authorization: Bearer {{token}}
+
+### Patients who have booked with me
+# @name patients
+GET {{base}}/patients?search=dela
+Authorization: Bearer {{token}}
+
+@patientId = {{patients.response.body.data[0].id}}
+
+### Full chart (allergies, meds, conditions, notes, Rx, labs) — this access is audit-logged
+GET {{base}}/patients/{{patientId}}/chart
+Authorization: Bearer {{token}}
+
+### Drug search
+# @name drugs
+GET {{base}}/drugs?q=amox
+Authorization: Bearer {{token}}
+
+### Safety dry-run: amoxicillin for a penicillin-allergic patient → contraindicated alert
+POST {{base}}/prescriptions/check
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "patientId": "{{patientId}}", "drugIds": ["{{drugs.response.body[0].id}}"] }
+
+### Signing it without an override reason → 409 with the alerts
+POST {{base}}/prescriptions
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "patientId": "{{patientId}}",
+  "items": [{ "drugId": "{{drugs.response.body[0].id}}", "dose": "1 capsule", "frequency": "three times daily", "durationDays": 7, "quantity": 21 }]
+}
+
+### Record a consultation note (notes are encrypted at rest)
+POST {{base}}/encounters
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "patientId": "{{patientId}}",
+  "chiefComplaint": "Headache for 3 days",
+  "notes": "BP elevated. Continue losartan. Recheck in 2 weeks.",
+  "vitals": { "bp": "150/95", "hr": 82, "temp": 36.8 },
+  "diagnoses": ["I10", "R51"]
+}
+
+### ─────────── Patient flow ───────────
+
+### Sign in as a patient
+# @name plogin
+POST {{base}}/auth/login
+Content-Type: application/json
+
+{ "email": "juan@example.com", "password": "{{password}}" }
+
+@ptoken = {{plogin.response.body.accessToken}}
+
+### Doctors accepting bookings
+# @name doctors
+GET {{base}}/doctors
+Authorization: Bearer {{ptoken}}
+
+### Open slots for a date (change the date to an upcoming Monday–Saturday)
+# @name slots
+GET {{base}}/doctors/{{doctors.response.body[0].id}}/slots?date=2026-10-05
+Authorization: Bearer {{ptoken}}
+
+### Book the first slot
+POST {{base}}/appointments
+Authorization: Bearer {{ptoken}}
+Content-Type: application/json
+
+{ "doctorId": "{{doctors.response.body[0].id}}", "startsAt": "{{slots.response.body[0].start}}", "type": "telemedicine", "reason": "Follow-up" }
+
+### My appointments
+GET {{base}}/appointments?pageSize=5
+Authorization: Bearer {{ptoken}}
+
+### Try to open someone else's data → 403 (RBAC)
+GET {{base}}/admin/users
+Authorization: Bearer {{ptoken}}
+
+### ─────────── Front desk ───────────
+
+# @name rlogin
+POST {{base}}/auth/login
+Content-Type: application/json
+
+{ "email": "reception@rxclinic.local", "password": "{{password}}" }
+
+@rtoken = {{rlogin.response.body.accessToken}}
+
+### Senior citizen invoice: ₱1,100 → ₱880 (20% off, VAT-exempt)
+# @name invoice
+POST {{base}}/invoices
+Authorization: Bearer {{rtoken}}
+Content-Type: application/json
+
+{
+  "patientId": "{{patientId}}",
+  "discountType": "senior",
+  "items": [
+    { "itemType": "consultation", "description": "Professional fee", "quantity": 1, "unitPrice": 600 },
+    { "itemType": "lab", "description": "Fasting blood sugar", "quantity": 1, "unitPrice": 500 }
+  ]
+}
+
+### Cash payment. Sending the same Idempotency-Key twice records it only once.
+POST {{base}}/invoices/{{invoice.response.body.id}}/payments
+Authorization: Bearer {{rtoken}}
+Content-Type: application/json
+Idempotency-Key: demo-payment-0001
+
+{ "amount": 880, "method": "cash" }
+
+### Low-stock items
+GET {{base}}/inventory?lowStock=true
+Authorization: Bearer {{rtoken}}
